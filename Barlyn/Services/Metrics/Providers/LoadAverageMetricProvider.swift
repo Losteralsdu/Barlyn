@@ -11,7 +11,7 @@ import Foundation
 /// the value the kernel reports.
 nonisolated struct LoadAverageMetricProvider: MetricProvider {
     let descriptor = MetricDescriptor(
-        id: MetricIdentifier("system.loadAverage"),
+        id: .loadAverage,
         displayName: "Load Average",
         shortName: "Load",
         symbolName: "gauge.with.dots.needle.33percent",

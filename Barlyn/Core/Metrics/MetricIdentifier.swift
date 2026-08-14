@@ -22,11 +22,13 @@ nonisolated extension MetricIdentifier {
     // Phase 1
     static let uptime = MetricIdentifier("system.uptime")
 
-    // Phase 3 — declared here so UI and preference defaults can reference them before the
-    // providers exist. `MetricRegistry` only ever reports metrics that are actually registered,
-    // so an identifier without a provider is inert rather than a crash.
+    // Phase 3
     static let cpuUsage = MetricIdentifier("cpu.usage")
     static let memoryUsage = MetricIdentifier("memory.usage")
     static let batteryPower = MetricIdentifier("battery.power")
+    /// Adapter draw for the whole machine — a different quantity from `batteryPower`.
+    static let systemPowerInput = MetricIdentifier("power.systemInput")
     static let cpuTemperature = MetricIdentifier("cpu.temperature")
+    static let thermalPressure = MetricIdentifier("thermal.pressure")
+    static let loadAverage = MetricIdentifier("system.loadAverage")
 }

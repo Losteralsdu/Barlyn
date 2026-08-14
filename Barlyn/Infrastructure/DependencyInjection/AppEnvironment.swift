@@ -21,6 +21,9 @@ final class AppEnvironment {
 
     private(set) var isBootstrapped = false
 
+    /// Second-wave registration for providers that need slow hardware probing.
+    private var deferredRegistration: Task<Void, Never>?
+
     init(
         preferences: PreferenceStore,
         metricRegistry: MetricRegistry = MetricRegistry(),
@@ -48,30 +51,51 @@ final class AppEnvironment {
     /// Registers every metric provider supported by this machine.
     ///
     /// Idempotent: safe to call from a SwiftUI `.task`, which may run more than once.
+    ///
+    /// Registration happens in two waves. Providers whose support check is effectively free are
+    /// registered before this returns, so the UI has real metrics immediately. Providers that
+    /// need expensive hardware probing are registered afterwards from a background task and
+    /// appear when confirmed — `MetricRegistry` is `@Observable`, so the UI updates itself.
+    /// Blocking launch on the slow probe would cost half a second of dead window.
     func bootstrap() async {
         guard !isBootstrapped else { return }
         isBootstrapped = true
 
-        await registerMetricProviders()
+        let powerSource = PowerSourceService()
+
+        // Registration order is the default display order.
+        let immediate: [any MetricProvider] = [
+            CPUUsageMetricProvider(),
+            MemoryMetricProvider(),
+            ThermalPressureMetricProvider(),
+            BatteryPowerMetricProvider(powerSource: powerSource),
+            SystemPowerMetricProvider(powerSource: powerSource),
+            LoadAverageMetricProvider(),
+            UptimeMetricProvider(),
+        ]
+        for provider in immediate {
+            await metricRegistry.registerIfSupported(provider)
+        }
 
         AppLog.app.notice(
             "Barlyn \(AppInfo.versionDescription, privacy: .public) bootstrapped with \(self.metricRegistry.count) metrics"
         )
+
+        deferredRegistration = Task { [metricRegistry] in
+            // SMC key discovery enumerates every key the controller exposes (~3500 on the
+            // development Mac, ~480 ms). It runs once per process and is cached inside
+            // `SMCService`; only the selected sensors are re-read per sample.
+            let smc = SMCService()
+            await metricRegistry.registerIfSupported(CPUTemperatureMetricProvider(smc: smc))
+        }
     }
 
-    /// The single place where the app's metric catalogue is declared.
+    /// Waits for hardware-probed providers to finish registering.
     ///
-    /// Phase 3 extends this list; nothing else in the app needs to change for a new metric to
-    /// appear in the menu bar, dashboard and Quick Launcher.
-    private func registerMetricProviders() async {
-        let providers: [any MetricProvider] = [
-            UptimeMetricProvider(),
-            LoadAverageMetricProvider(),
-        ]
-
-        for provider in providers {
-            await metricRegistry.registerIfSupported(provider)
-        }
+    /// Exists for tests and for any UI that must not report "unsupported" before probing has
+    /// actually finished. Normal UI does not need it — the registry is observable.
+    func awaitFullRegistration() async {
+        await deferredRegistration?.value
     }
 }
 

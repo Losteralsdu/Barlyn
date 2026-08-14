@@ -153,16 +153,37 @@ holding previous ticks. `KERN_SUCCESS` confirmed, 15 cores. Must `vm_deallocate`
 array. `getloadavg(3)` works and is already used by `LoadAverageMetricProvider`.
 
 ### Memory
-`host_statistics64(HOST_VM_INFO64)` confirmed. Page size **16384** on Apple Silicon — always read
-`vm_kernel_page_size`, never assume 4096. Available fields: free, active, inactive, wired,
-compressor (compressed), speculative, purgeable, external.
+`host_statistics64(HOST_VM_INFO64)` confirmed. Page size **16384** on Apple Silicon.
+Read it with `host_page_size()` — **not** the `vm_kernel_page_size` global, which is mutable
+shared state and rejected under Swift 6 concurrency checking. Never assume 4096; doing so makes
+every derived byte figure 4× too small.
 `ProcessInfo.physicalMemory` = 25769803776 (24 GiB).
 
-**"Used memory" must be defined and documented.** Activity Monitor's "Memory Used" ≈
-`active + wired + compressed` (excluding purgeable/external). Phase 3 must state which definition
-is displayed rather than inventing one.
+**"Used memory" has no single definition and tools disagree.** Measured together on this machine
+(24 GiB, idle-ish):
 
-### Battery power — **available and reliable**
+| Definition | Result |
+|---|---|
+| App Memory + wired + compressed | 12.6 GiB |
+| active + wired + compressed | 12.7 GiB |
+| total − free − speculative (`top`'s "used") | 20.2 GiB |
+
+`top` counts inactive as used; Activity Monitor does not. Barlyn reports the first:
+
+```
+appMemory = internal_page_count − purgeable_count   (saturating; counters sample independently)
+used      = appMemory + wire_count + compressor_page_count
+```
+
+`internal` rather than `active`, because inactive *anonymous* pages are still app memory.
+File-backed (`external`) pages are excluded — cache, not usage.
+**Open: this has not been compared side by side with Activity Monitor's UI.** The composition
+follows Apple's description and is self-consistent, but a human should confirm it once.
+
+### Battery power — **available and reliable** (implemented, Phase 3)
+Live cross-check of the running app against `ioreg` at the same moment: app reported
+`+9.4 W` system input vs `SystemPowerIn = 9358` mW, and `12.45 V` vs `Voltage = 12452` mV. Exact.
+
 IORegistry service `AppleSmartBattery` exposes:
 
 | Key | Observed | Meaning |
@@ -181,8 +202,10 @@ Battery-side watts = `Amperage (mA) × Voltage (mV) / 1e6`. Distinguish battery 
 input power in the UI — they are different quantities and users conflate them.
 `IOPSCopyPowerSourcesInfo` (public) gives percentage/state/time-remaining but **no wattage**.
 
-### CPU temperature — **available via SMC, with real caveats**
-`IOServiceOpen` on `AppleSMC` **succeeded** from an unsandboxed process. 3485 keys enumerated.
+### CPU temperature — **available via SMC, with real caveats** (implemented, Phase 3)
+`IOServiceOpen` on `AppleSMC` **succeeded** from an unsandboxed process. 3485 keys enumerated;
+**67 classified as usable sensors**, of which **23 are `Tp…` P-core die sensors**.
+Live app readings: mean **49 °C**, peak 53 °C — consistent with the standalone probe.
 Confirmed live readings (type `flt `, little-endian Float32):
 
 - `Tp0*` (Tp00, Tp04, Tp08, Tp0C…) — P-core cluster die, 46–53 °C
@@ -199,8 +222,15 @@ Confirmed live readings (type `flt `, little-endian Float32):
 3. Some keys return sentinel garbage (`TTPD` = −306783232.0) or 0.0 for inactive channels
    (`Tz1*`). Range-check every value (`MetricValue.isPlausible`).
 4. Requires an unsandboxed process (ADR-001).
-5. Enumerating all 3485 keys costs ~7000 IOKit round trips — **do this once at startup and cache
-   the discovered sensor list**; only re-read selected keys per interval.
+5. **Measured discovery cost: ~480 ms** in the real app (~3500 `kSMCGetKeyFromIndex` calls plus
+   `kSMCGetKeyInfo` for matches). Done once per process and cached in `SMCService`; only the
+   selected sensors are re-read per sample. Because 480 ms is too long to sit on the launch path,
+   `AppEnvironment.bootstrap()` registers SMC-backed providers in a **second wave** (ADR-008).
+   In test runs several `SMCService` instances contend and report ~2.6 s — that is contention,
+   not the real single-process cost.
+   *Possible future optimisation:* observed key order is alphabetical, so the `Tp…` range could be
+   binary-searched instead of fully enumerated. Not done — it would make correctness depend on an
+   undocumented ordering guarantee for a 480 ms one-off saving.
 
 Public alternative, always available, no caveats: `ProcessInfo.thermalState`
 (nominal/fair/serious/critical) — verified working. Ship this as the guaranteed baseline.
@@ -307,6 +337,29 @@ values when demand is released.
 Discarding on release also removes a whole class of "stale value shown as current" bugs.
 **Consequence:** Every UI must declare and release demand (`.task` / `.onDisappear`).
 
+### ADR-008 — Two-wave provider registration
+**Date:** 2026-08-14
+**Decision:** `AppEnvironment.bootstrap()` registers providers with cheap support checks
+synchronously, then registers hardware-probed providers (currently CPU temperature) from a
+background `Task`. `awaitFullRegistration()` exists for tests.
+**Reason:** SMC key discovery measures ~480 ms. Blocking launch on it means the window renders
+empty for half a second on every start of an app intended to launch at login. `MetricRegistry`
+is `@Observable`, so late arrivals appear without any UI coordination.
+**Consequence:** `descriptors` order is arrival order, so CPU temperature currently sorts last.
+Acceptable while the default order is provisional; Phase 2/4 persist a user-defined order anyway.
+A test asserts `bootstrap()` returns in under 250 ms.
+
+### ADR-009 — Battery power and system input power are separate metrics
+**Date:** 2026-08-14
+**Decision:** Ship `battery.power` (signed, battery-side, `Amperage × Voltage`) and
+`power.systemInput` (adapter draw, `PowerTelemetryData.SystemPowerIn`) as two distinct metrics.
+**Reason:** They are different physical quantities that users conflate. On AC with a charged
+battery they read 0 W and ~9 W respectively; presenting either as "power consumption" would be
+wrong half the time.
+**Consequence:** Two rows where other tools show one. On battery, `power.systemInput` reports
+*unavailable* rather than 0 W — there is no adapter draw to measure, which is not the same
+statement as "the Mac is using no power".
+
 ### ADR-007 — Swift Testing over XCTest
 **Date:** 2026-08-10
 **Decision:** New tests use `import Testing` (`@Suite` / `@Test` / `#expect`). XCTest boilerplate
@@ -333,12 +386,32 @@ supported direction on Xcode 26. UI tests, if reintroduced, still require XCUITe
 6. **`log show --predicate '…'` fails under this zsh** ("too many arguments") — put it in a
    `.sh` file.
 7. `os_log` `.debug`/`.info` need `--info --debug` on `log show` to appear.
+8. **`print()` from tests does not reach `xcodebuild` stdout.** To capture live values from a test,
+   write to a file instead.
+9. **`vm_kernel_page_size` is a mutable global** and fails Swift 6 concurrency checking. Use
+   `host_page_size(mach_host_self(), &size)`.
+10. **`Duration` has no `.milliseconds` accessor** — destructure `components` (seconds,
+    attoseconds). A small extension lives in `SMCService.swift`.
 
 ---
 
 ## 10. Testing strategy
 
-Swift Testing, 33 tests, all passing. Coverage:
+Swift Testing, 54 tests, all passing. Coverage:
+
+**Phase 3 providers** (real hardware; assertions are on invariants, never machine-specific values):
+- CPU: first sample must report `notYetSampled` (never usage-since-boot); `100 − idle` agrees with
+  the headline; the four states sum to ~100 %; repeated sampling stays in range.
+- Memory: `used == app + wired + compressed`; percentage agrees; App Memory cannot underflow;
+  cached files excluded from used; page size read from the kernel.
+- SMC: `SMCKeyData` stride is exactly 80 bytes; discovered keys match their family prefix; every
+  surviving temperature is plausible; fan keys are `…Ac` actuals, not `Mn`/`Mx`/`Tg` limits.
+- Power: watts derive from amperage × voltage with the signed convention; battery state
+  distinguishes plugged-in-not-charging from full; system power is *unavailable* on battery,
+  not 0 W; the snapshot is cached rather than re-read per provider.
+- Bootstrap returns in < 250 ms despite the ~480 ms SMC probe.
+
+**Phase 1 foundation:**
 
 - Metric model: plausibility bounds (including the real `TTPD` sentinel), `checked()` downgrade,
   interval clamping, provenance, Codable round trip.
@@ -359,6 +432,12 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 ## 11. Open tasks / technical debt
 
 - [ ] **Resolve the nested git repository** (§7.3) — needs a human decision.
+- [ ] **Confirm the memory "used" figure against Activity Monitor's UI** (§5). Composition follows
+      Apple's description and is self-consistent, but has not been eyeballed side by side.
+- [ ] GPU temperature (`Tg…`) and fan RPM (`F…Ac`) are already discovered and classified by
+      `SMCService` but have no providers yet — roughly 20 lines each.
+- [ ] CPU temperature registers last because of two-wave registration (ADR-008); revisit default
+      ordering when Phase 4 introduces user-defined layout.
 - [ ] `FoundationStatusView` is scaffolding; delete when Phase 4's dashboard lands.
 - [ ] `PreferenceKeys.menuBarMetrics` defaults to `[.cpuUsage, .memoryUsage]`, whose providers do
       not exist until Phase 3. Inert by design, but revisit the default when they land.
@@ -375,7 +454,7 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 |---|---|---|
 | 1 | Foundation: lifecycle, DI, logging, config, models, protocols, preferences, tests | **Done** |
 | 2 | Menu bar: `MenuBarExtra`, popover, compact metrics, configurable visibility | Next |
-| 3 | System metrics: CPU, RAM, battery power, temperature | Pending |
+| 3 | System metrics: CPU, RAM, battery power, temperature | **Done** |
 | 4 | Dashboard: window, metric cards, widget config, graph architecture | Pending |
 | 5 | Quick Launcher: global hotkey, search, action providers | Pending |
 | 6 | Clipboard: monitoring, persistence, search, privacy controls | Pending |

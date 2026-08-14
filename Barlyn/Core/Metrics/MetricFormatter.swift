@@ -41,6 +41,14 @@ nonisolated struct MetricFormatter: Sendable {
             // Sign is meaningful for battery power (negative = discharging), so it is always
             // shown, including a leading "+" while charging.
             return signedNumber(value.magnitude, fractionDigits: 1) + separator + value.unit.symbol
+        case .volts, .amperes:
+            return number(value.magnitude, fractionDigits: 2) + separator + value.unit.symbol
+        case .thermalLevel:
+            return ThermalPressureLevel(rawValue: Int(value.magnitude))?.displayName
+                ?? Self.unavailablePlaceholder
+        case .powerState:
+            return BatteryState(rawValue: Int(value.magnitude))?.displayName
+                ?? Self.unavailablePlaceholder
         case .bytes:
             return bytes(value.magnitude)
         case .bytesPerSecond:

@@ -45,12 +45,33 @@ struct SystemProviderTests {
         await environment.bootstrap()
 
         #expect(environment.isBootstrapped)
-        #expect(environment.metricRegistry.count == 2)
-        #expect(environment.metricRegistry.descriptor(for: .uptime) != nil)
+
+        // Assert on identity rather than a count: metrics whose hardware is absent are correctly
+        // omitted, so a count would be machine-specific and would break whenever a metric is added.
+        for id in [MetricIdentifier.cpuUsage, .memoryUsage, .thermalPressure, .loadAverage, .uptime] {
+            #expect(environment.metricRegistry.descriptor(for: id) != nil, "\(id) should always register")
+        }
 
         // Idempotent: SwiftUI may run the bootstrapping `.task` more than once.
+        let count = environment.metricRegistry.count
         await environment.bootstrap()
-        #expect(environment.metricRegistry.count == 2)
+        #expect(environment.metricRegistry.count == count)
+    }
+
+    @Test("Slow hardware probing does not block the first wave of registration")
+    @MainActor
+    func bootstrapDoesNotBlockOnSlowProbes() async {
+        let environment = AppEnvironment.ephemeral()
+
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure { await environment.bootstrap() }
+
+        // SMC key discovery takes roughly half a second. If it were on the critical path the
+        // window would sit empty for that long, so bootstrap must return well before it.
+        #expect(elapsed < .milliseconds(250), "bootstrap() took \(elapsed)")
+        #expect(environment.metricRegistry.descriptor(for: .cpuUsage) != nil)
+
+        await environment.awaitFullRegistration()
     }
 
     /// End-to-end through the real composition root: bootstrap, declare demand exactly as the
