@@ -76,7 +76,7 @@ struct SystemProviderTests {
 
     /// End-to-end through the real composition root: bootstrap, declare demand exactly as the
     /// UI does, and assert that real values from real system APIs arrive and format for display.
-    /// This is the path `FoundationStatusView` drives; only SwiftUI rendering is excluded.
+    /// This is the path `DashboardView` drives; only SwiftUI rendering is excluded.
     @Test("Full pipeline delivers formatted live values")
     @MainActor
     func livePipeline() async throws {

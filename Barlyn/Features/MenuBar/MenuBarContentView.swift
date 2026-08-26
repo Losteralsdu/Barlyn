@@ -41,6 +41,10 @@ struct MenuBarContentView: View {
                 }
                 SettingsLink { Text("Settings…") }
                     .onHover { _ in NSApp.activate() }
+                Button("Search") {
+                    environment.quickLauncher.show()
+                }
+                .help("Quick Launcher · \(environment.preferences[PreferenceKeys.launcherHotkey].displayString)")
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")
@@ -50,6 +54,14 @@ struct MenuBarContentView: View {
         .padding(12)
         .frame(width: 300)
         .task {
+            // The launcher's actions need SwiftUI's `openWindow`/`openSettings`, which only
+            // exist inside a view. Wiring it here rather than in `AppEnvironment` keeps the
+            // environment free of SwiftUI action plumbing.
+            environment.quickLauncher.actionRunner = LauncherActionRunner(
+                openWindow: { openWindow(id: $0.rawValue) },
+                openSettings: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+            )
+
             // Demand for the full set lasts only while the panel is open; the menu bar label's
             // own subset is managed separately and persists.
             environment.metricSampler.setDemand(

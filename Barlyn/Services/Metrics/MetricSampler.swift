@@ -29,6 +29,7 @@ final class MetricSampler {
     }
 
     private let registry: MetricRegistry
+    let history: MetricHistory
 
     /// Latest reading per metric. Only contains currently-sampled metrics.
     private(set) var readings: [MetricIdentifier: MetricReading] = [:]
@@ -43,8 +44,9 @@ final class MetricSampler {
     /// User-configured cadences, overriding each provider's preferred interval.
     private var intervalOverrides: [MetricIdentifier: Duration] = [:]
 
-    init(registry: MetricRegistry) {
+    init(registry: MetricRegistry, history: MetricHistory = MetricHistory()) {
         self.registry = registry
+        self.history = history
     }
 
     // No `deinit` cleanup: `deinit` is nonisolated and cannot touch main-actor state. It is not
@@ -120,6 +122,9 @@ final class MetricSampler {
             // Drop the value too: a stale number outliving its sampler is exactly the kind of
             // silently-wrong display this architecture is meant to prevent.
             readings.removeValue(forKey: id)
+            // Discard history too: a chart spanning a gap in sampling would draw a continuous
+            // line across a period that was never measured.
+            history.clear(id)
             lastLoggedError.removeValue(forKey: id)
         }
 
@@ -143,6 +148,7 @@ final class MetricSampler {
                     let reading = try await provider.read()
                     guard let self, !Task.isCancelled else { return }
                     self.readings[id] = reading
+                    self.history.record(reading, for: id)
                     self.lastLoggedError.removeValue(forKey: id)
                 } catch let error as MetricError {
                     guard let self, !Task.isCancelled else { return }

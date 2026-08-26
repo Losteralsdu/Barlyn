@@ -33,6 +33,25 @@ nonisolated enum PreferenceKeys {
     /// `AppConfiguration`, so a corrupt value cannot make the app poll faster than the floor.
     static let menuBarUpdateInterval = PreferenceKey("menuBar.updateIntervalSeconds", default: 2.0)
     static let menuBarStyle = PreferenceKey("menuBar.style", default: MenuBarStyle.compact)
+
+    // MARK: Dashboard
+    /// Metrics the user has explicitly hidden. A hide-list rather than a show-list, so a newly
+    /// added provider appears on the dashboard automatically instead of staying invisible until
+    /// the user discovers it — the same "add a provider, it shows up everywhere" promise the
+    /// metric system makes elsewhere.
+    static let dashboardHiddenMetrics = PreferenceKey<[MetricIdentifier]>(
+        "dashboard.hiddenMetrics",
+        default: []
+    )
+    /// Explicit card order. Metrics absent from this list sort after it, by category.
+    static let dashboardOrder = PreferenceKey<[MetricIdentifier]>("dashboard.order", default: [])
+    static let dashboardShowsCharts = PreferenceKey("dashboard.showsCharts", default: true)
+
+    // MARK: Quick Launcher
+    /// Option+Space by default. Command+Space is deliberately avoided: Spotlight owns it, and
+    /// Carbon reports registering it as a success while the keystroke never actually arrives.
+    static let launcherHotkey = PreferenceKey("launcher.hotkey", default: KeyCombination.optionSpace)
+    static let launcherEnabled = PreferenceKey("launcher.enabled", default: true)
 }
 
 /// How much each metric shows in the menu bar itself, where horizontal space is scarce.

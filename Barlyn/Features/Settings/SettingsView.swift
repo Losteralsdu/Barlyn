@@ -11,6 +11,10 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             MenuBarSettingsView()
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
+            DashboardSettingsView()
+                .tabItem { Label("Dashboard", systemImage: "square.grid.2x2") }
+            LauncherSettingsView()
+                .tabItem { Label("Quick Launcher", systemImage: "magnifyingglass") }
         }
         .frame(width: 460)
     }
@@ -169,6 +173,128 @@ struct MenuBarSettingsView: View {
         Binding(
             get: { environment.preferences[PreferenceKeys.menuBarUpdateInterval] },
             set: { environment.menuBarConfiguration.setUpdateInterval($0) }
+        )
+    }
+}
+
+/// Chooses which metric cards the dashboard shows, in what order, and whether cards chart.
+struct DashboardSettingsView: View {
+    @Environment(\.appEnvironment) private var environment
+
+    var body: some View {
+        Form {
+            Section("Cards") {
+                let visible = environment.dashboardConfiguration.visibleMetrics
+                if visible.isEmpty {
+                    Text("Every metric is hidden.").foregroundStyle(.secondary)
+                }
+                ForEach(Array(visible.enumerated()), id: \.element.id) { index, descriptor in
+                    HStack {
+                        Label(descriptor.displayName, systemImage: descriptor.symbolName)
+                        Spacer()
+                        Button {
+                            environment.dashboardConfiguration.move(descriptor.id, by: -1)
+                        } label: { Image(systemName: "chevron.up") }
+                            .disabled(index == 0)
+                            .accessibilityLabel("Move \(descriptor.displayName) earlier")
+                        Button {
+                            environment.dashboardConfiguration.move(descriptor.id, by: 1)
+                        } label: { Image(systemName: "chevron.down") }
+                            .disabled(index == visible.count - 1)
+                            .accessibilityLabel("Move \(descriptor.displayName) later")
+                        Button {
+                            environment.dashboardConfiguration.setVisible(false, for: descriptor.id)
+                        } label: { Image(systemName: "eye.slash") }
+                            .accessibilityLabel("Hide \(descriptor.displayName)")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            let hidden = environment.dashboardConfiguration.hiddenMetrics
+            if !hidden.isEmpty {
+                Section("Hidden") {
+                    ForEach(hidden) { descriptor in
+                        HStack {
+                            Label(descriptor.displayName, systemImage: descriptor.symbolName)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                environment.dashboardConfiguration.setVisible(true, for: descriptor.id)
+                            } label: { Image(systemName: "eye") }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Show \(descriptor.displayName)")
+                        }
+                    }
+                }
+            }
+
+            Section("Display") {
+                Toggle("Show trend charts", isOn: chartsBinding)
+                Button("Reset Layout") { environment.dashboardConfiguration.resetLayout() }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(minHeight: 380)
+    }
+
+    private var chartsBinding: Binding<Bool> {
+        Binding(
+            get: { environment.dashboardConfiguration.showsCharts },
+            set: { environment.dashboardConfiguration.setShowsCharts($0) }
+        )
+    }
+}
+
+/// Quick Launcher settings.
+///
+/// The shortcut is displayed but not yet re-recordable: a proper recorder, with conflict
+/// detection, is Phase 8's job and belongs to the central shortcut system rather than being
+/// built once here and again later.
+struct LauncherSettingsView: View {
+    @Environment(\.appEnvironment) private var environment
+
+    var body: some View {
+        Form {
+            Section("Shortcut") {
+                Toggle("Enable Quick Launcher", isOn: enabledBinding)
+
+                LabeledContent("Shortcut") {
+                    Text(environment.preferences[PreferenceKeys.launcherHotkey].displayString)
+                        .font(.title3.monospaced())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: .rect(cornerRadius: 5))
+                }
+
+                Text("Customising the shortcut arrives with the shortcut recorder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                // Stated plainly because macOS gives no way to detect it: Carbon reports
+                // registering a system-owned combination as a success, and the key press then
+                // never arrives. Claiming otherwise would be a promise the app cannot keep.
+                Label(
+                    "If another app or macOS already owns this combination, that app wins and Barlyn never receives the key press. macOS provides no way to detect this, so try the shortcut after changing it.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(minHeight: 260)
+    }
+
+    private var enabledBinding: Binding<Bool> {
+        Binding(
+            get: { environment.preferences[PreferenceKeys.launcherEnabled] },
+            set: {
+                environment.preferences[PreferenceKeys.launcherEnabled] = $0
+                environment.applyLauncherHotkey()
+            }
         )
     }
 }

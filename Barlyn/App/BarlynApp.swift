@@ -31,7 +31,7 @@ struct BarlynApp: App {
         .menuBarExtraStyle(.window)
 
         Window("Barlyn", id: WindowID.dashboard.rawValue) {
-            FoundationStatusView()
+            DashboardView()
                 .environment(\.appEnvironment, environment)
                 .preferredColorScheme(environment.preferences[PreferenceKeys.appearance].colorScheme)
         }

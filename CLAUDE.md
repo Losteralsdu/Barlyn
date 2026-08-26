@@ -66,18 +66,24 @@ Barlyn/
 │   └── AppDelegate.swift       AppKit hooks SwiftUI does not expose
 ├── Core/                       Pure logic. No system APIs, no SwiftUI. Fully unit-testable.
 │   ├── Errors/                 BarlynError protocol, MetricError, PersistenceError, PermissionKind
-│   └── Metrics/                Identifier, Unit, Value, Descriptor, Reading, Provider, Registry, Formatter
+│   ├── Launcher/               LauncherResult, LauncherAction, provider protocol, FuzzyMatcher
+│   ├── Shortcuts/              KeyCombination, ModifierKeys
+│   └── Metrics/                Identifier, Unit, Value, Descriptor, Reading, Provider, Registry,
+│                               Formatter, History, States
 ├── Infrastructure/             Cross-cutting concerns
 │   ├── Configuration/          AppInfo, AppConfiguration (sampling bounds)
 │   ├── Logging/                AppLog — one Logger per category
 │   └── DependencyInjection/    AppEnvironment — the composition root
 ├── Services/                   Implementations that talk to the system
-│   ├── Metrics/                MetricSampler + Providers/
+│   ├── Metrics/                MetricSampler + Providers/ + Sources/ (SMC, PowerSource)
+│   ├── Launcher/               LauncherSearchService, LauncherActionRunner + Providers/
+│   ├── Shortcuts/              HotkeyService (Carbon)
 │   └── Preferences/            PreferenceStorage, PreferenceKey, PreferenceStore
 ├── Features/                   UI, one folder per feature
 │   ├── MenuBar/                MenuBarConfiguration, label + panel views
-│   ├── Settings/               SettingsView (General, Menu Bar tabs)
-│   └── Diagnostics/            FoundationStatusView (scaffold, replaced by Phase 4 dashboard)
+│   ├── Dashboard/              DashboardConfiguration, DashboardView, MetricCard, MetricChartView
+│   ├── QuickLauncher/          QuickLauncherController, Panel (NSPanel), View
+│   └── Settings/               SettingsView (General, Menu Bar, Dashboard, Quick Launcher tabs)
 └── Assets.xcassets
 ```
 
@@ -134,6 +140,20 @@ the app, which is why the update interval is user-configurable —
 `MetricSampler.setIntervalOverride(_:for:)`, applied by `MenuBarConfiguration`. All intervals,
 override or not, are clamped to `AppConfiguration` bounds (floor 500 ms, ceiling 60 s), so no
 persisted or hand-edited preference can poll faster than the floor.
+
+### Dashboard and history (Phase 4)
+
+`DashboardView` renders one `MetricCard` per visible metric in an adaptive grid.
+`DashboardConfiguration` stores a **hide-list**, not a show-list — the opposite of the menu bar —
+so a newly registered provider appears on the dashboard automatically. Menu bar space is scarce and
+must be a chosen few; the dashboard is the full picture.
+
+`MetricHistory` keeps a bounded in-memory window (120 samples, ~4 min at the default cadence) fed
+by `MetricSampler` on every successful read, and **discarded when demand is released** — a chart
+drawn across a sampling gap would imply continuity that was never measured. Nothing is written to
+disk; longer retention means giving `MetricHistory` a backend and changing nothing above it.
+Charts use Swift Charts (an Apple framework, not a dependency) and render nothing below two
+samples, because a single point is not a trend.
 
 ### Menu bar (Phase 2)
 
@@ -258,10 +278,34 @@ Public alternative, always available, no caveats: `ProcessInfo.thermalState`
   it is "awake time", not uptime. `UptimeMetricProvider` uses `KERN_BOOTTIME`.
 - `ProcessInfo.isLowPowerModeEnabled`, `activeProcessorCount` — fine.
 
-### Not yet investigated (do before Phase 5/7)
-Global hotkeys (Carbon `RegisterEventHotKey` is the intended approach — no permission needed,
-still functional on Apple Silicon; `NSEvent` global monitors need Input Monitoring and cannot
-consume events). Accessibility `AXUIElement` window control. `NSPasteboard.changeCount` polling.
+### Global hotkeys — **verified working** (implemented, Phase 5)
+Carbon `RegisterEventHotKey` on macOS 26 / Apple Silicon, unsandboxed, **no permission required**:
+
+| Case | Result |
+|---|---|
+| `Option+Space` | `noErr` — works |
+| Same combination twice in one process | `eventHotKeyExistsErr` (−9878) |
+| Same combination from a *different* process | `noErr` — cross-process duplicates are allowed |
+| `Command+Space` (Spotlight owns it) | **`noErr`** — then silently never fires |
+| `InstallEventHandler` on the dispatcher target | `noErr` |
+
+**The critical gap:** registering a combination macOS or another app already owns *succeeds*, and
+the key press then never arrives because the other handler wins. Carbon offers no way to detect
+this. Conflict detection is therefore only reliable *within* Barlyn, and the UI must never claim a
+shortcut works merely because registration returned `noErr` — Settings says so explicitly.
+
+`NSEvent.addGlobalMonitorForEvents` is not a substitute: it needs Input Monitoring **and** cannot
+consume the event, so the launcher shortcut would also type into the focused app.
+
+### Applications on disk (implemented, Phase 5)
+**Finder is not in `/System/Applications`** — it lives in `/System/Library/CoreServices`, which
+also holds ~117 background agents. Filtering on `LSUIElement` / `LSBackgroundOnly` in each app's
+`Info.plist` is the same rule macOS uses to keep an app out of the Dock, so it needs no
+hand-maintained blocklist. Result on this machine: **130 launchable apps indexed in 20 ms**, cached
+for 5 minutes. Barlyn excludes itself, correctly, being `LSUIElement`.
+
+### Not yet investigated (do before Phase 6/7)
+Accessibility `AXUIElement` window control. `NSPasteboard.changeCount` polling.
 `NSScreen` multi-display geometry.
 
 ---
@@ -390,6 +434,52 @@ an explicit user-facing update interval instead of a hidden default.
 caps the worst case, and users who want zero background polling can deselect every menu bar metric,
 which leaves the label as a static icon and demand genuinely empty.
 
+### ADR-011 — The dashboard stores a hide-list; the menu bar stores a show-list
+**Date:** 2026-08-26
+**Decision:** `dashboard.hiddenMetrics` records what the user has switched *off*, while
+`menuBar.metrics` records what they switched *on*.
+**Reason:** They answer different questions. Menu bar width is shared with every other app, so its
+contents must be a deliberate few and an opt-in list is correct. The dashboard is the full picture,
+and a metric added by a later version should appear there without the user having to discover and
+enable it — which an opt-in list would prevent.
+**Consequence:** Two shapes of configuration for what looks like one problem. The asymmetry is
+deliberate and is what keeps "add a provider, it shows up everywhere" true after Phase 4.
+
+### ADR-012 — Metric history is in-memory, bounded, and dropped with demand
+**Date:** 2026-08-26
+**Decision:** `MetricHistory` keeps 120 samples per metric in memory, records only available
+readings, and clears a metric's series when its sampling stops.
+**Reason:** The MVP needs live values with room for history later, not a time-series database.
+Dropping on release follows ADR-006: a chart that spans a period when nothing was sampled draws a
+continuous line through data that was never collected, which is the visual form of fabricating a
+value.
+**Consequence:** Opening the dashboard shows charts that fill in over the following seconds rather
+than instantly. Menu bar metrics are the exception — they sample continuously, so their history is
+already populated. Persistent history means giving `MetricHistory` a storage backend; no consumer
+changes.
+
+### ADR-013 — Carbon `RegisterEventHotKey` for global shortcuts
+**Date:** 2026-08-26
+**Decision:** Global hotkeys go through Carbon, wrapped in `HotkeyService`.
+**Reason:** It is the only mechanism that needs **no permission** and **consumes** the keystroke.
+`NSEvent.addGlobalMonitorForEvents` requires Input Monitoring and cannot stop the event reaching
+the focused app, so pressing the launcher shortcut would also type into whatever was open.
+Verified working on macOS 26 / Apple Silicon.
+**Consequence:** A deprecated-looking API in the codebase, isolated behind one service. Conflict
+detection is partial: same-process collisions are caught, system-owned ones are undetectable, and
+the UI states that limitation rather than implying the shortcut is guaranteed.
+
+### ADR-014 — Launcher actions are an enum, not closures
+**Date:** 2026-08-26
+**Decision:** `LauncherResult.action` is a `LauncherAction` enum; `LauncherActionRunner` is the one
+place it becomes a side effect.
+**Reason:** Closures would make results non-`Sendable`, capture UI state, and scatter side effects
+across every provider. An enum keeps results comparable value types that can be ranked, cached and
+asserted on in tests, and puts every externally visible thing the launcher can do in one auditable
+file.
+**Consequence:** Adding a new kind of action means adding a case and handling it in the runner,
+rather than a provider inventing its own behaviour — which is the point.
+
 ### ADR-007 — Swift Testing over XCTest
 **Date:** 2026-08-10
 **Decision:** New tests use `import Testing` (`@Suite` / `@Test` / `#expect`). XCTest boilerplate
@@ -428,12 +518,51 @@ supported direction on Xcode 26. UI tests, if reintroduced, still require XCUITe
     `body` and read the log — a repeatedly-evaluated body is the status item live-updating.
 12. **A `MenuBarExtra` label is not a dependable place for one-time lifecycle work.** Bootstrapping
     is kicked off from `BarlynApp.init` instead, because the panel may never be opened.
+13. **Swift 6.3.3 miscompiles `dict[key]?.member` when the value struct starts with a non-nullable
+    pointer.** `HotkeyService.Registration` begins with an `EventHotKeyRef`, which `Optional` uses
+    as its extra-inhabitant tag. On an *empty* dictionary, `registrations[id]?.combination`
+    returned a non-nil value full of raw memory while `registrations[id] == nil` evaluated to
+    `true` **in the same function** — reproduced deliberately, twice, in Debug/-Onone. The explicit
+    `guard let … else { return nil }` form is correct. `combination(for:)` carries a comment saying
+    so; do not "simplify" it back.
+14. **Swift Testing runs tests in parallel, which breaks anything using process-wide OS state.**
+    Global hotkey registrations are shared across the whole process, so `HotkeyServiceTests` is
+    marked `.serialized` and each test uses a distinct key. Symptom without it: registrations
+    colliding non-deterministically between unrelated tests.
+15. **`xcrun xcresulttool` will not readily surface a Swift Testing failure message.** The fastest
+    route to a real diagnosis is a temporary test that writes its findings to a file (see also
+    gotcha 8).
 
 ---
 
 ## 10. Testing strategy
 
-Swift Testing, 63 tests, all passing. Coverage:
+Swift Testing, 103 tests, all passing. Coverage:
+
+**Phase 5 quick launcher:**
+- Fuzzy matching tiers: exact > prefix > word-boundary > contains > subsequence; shorter
+  candidates win ties; non-matches return `nil` rather than a low score; case-insensitive both ways.
+- Ranking puts relevance above section, so a strong app match beats a weak metric match; section
+  breaks ties; results are capped.
+- Commands match aliases ("preferences" finds Settings), metric rows carry `.none` and are
+  informational, applications return nothing for an empty query.
+- Real hardware: Finder is discoverable (it lives in CoreServices, not `/System/Applications`) and
+  background agents are excluded.
+- Pipeline: a live query flows through all providers concurrently and ranks; a newer query cancels
+  an older one so stale results cannot overwrite fresher ones.
+- Key combinations: canonical modifier order (⌃⌥⇧⌘), Carbon bit mapping, modifier-less rejection,
+  Codable round trip.
+- `HotkeyService` (`.serialized` — hotkeys are process-wide): re-registering an id replaces rather
+  than collides, and a combination already held inside Barlyn is refused.
+
+**Phase 4 dashboard:**
+- History records only real measurements — unavailable readings never become zeroes.
+- The window is bounded and slides forward (oldest dropped, not newest).
+- Clearing is scoped to one metric; releasing demand discards that metric's history.
+- Everything registered is visible by default; a metric registered *after* the user has reordered
+  still appears, and does not displace their arrangement.
+- Hiding is idempotent, reordering clamps at both ends, reset restores defaults.
+- Layout and chart preference survive a reopened store.
 
 **Phase 2 menu bar:**
 - Preferences naming unregistered metrics are filtered out, not rendered broken.
@@ -477,12 +606,16 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 
 - [ ] **Confirm the memory "used" figure against Activity Monitor's UI** (§5). Composition follows
       Apple's description and is self-consistent, but has not been eyeballed side by side.
-- [ ] `FoundationStatusView` is scaffolding; delete when Phase 4's dashboard lands.
+- [ ] Metric history is in-memory only and capped at 120 samples (~4 min at the default cadence).
+      Longer ranges need a storage backend behind `MetricHistory`; nothing above it would change.
+- [ ] `MetricCard` shows at most four components; the full breakdown has no detail view yet.
 - [ ] `AppInfo`/`AppConfiguration` values are English literals; move to a String Catalog before
       any localisation work.
 - [ ] UI test target exists but is empty (template tests removed).
-- [ ] The menu bar panel is the only place the dashboard can be opened from; there is no global
-      hotkey for it until Phase 8.
+- [ ] The launcher shortcut is fixed at ⌥Space until Phase 8 adds the recorder; Settings shows it
+      read-only.
+- [ ] Only the launcher shortcut exists; window and clipboard shortcuts arrive with their phases.
+- [ ] `ApplicationActionProvider` refreshes on a 5-minute TTL rather than watching for installs.
 
 ---
 
@@ -493,19 +626,21 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 | 1 | Foundation: lifecycle, DI, logging, config, models, protocols, preferences, tests | **Done** |
 | 2 | Menu bar: `MenuBarExtra`, panel, compact metrics, configurable visibility | **Done** |
 | 3 | System metrics: CPU, RAM, battery power, temperature | **Done** |
-| 4 | Dashboard: window, metric cards, widget config, graph architecture | Next |
-| 5 | Quick Launcher: global hotkey, search, action providers | Pending |
-| 6 | Clipboard: monitoring, persistence, search, privacy controls | Pending |
+| 4 | Dashboard: window, metric cards, widget config, graph architecture | **Done** |
+| 5 | Quick Launcher: global hotkey, search, action providers | **Done** |
+| 6 | Clipboard: monitoring, persistence, search, privacy controls | Next |
 | 7 | Window management: Accessibility, positioning, multi-display | Pending |
 | 8 | Shortcut system: central manager, recorder, conflict detection | Pending |
 | 9 | Onboarding | Pending |
 | 10 | Polish: UX, a11y, performance, error handling | Pending |
 | 11 | Future infrastructure: auth/sync/remote-config/analytics abstractions | Pending |
 
-**Phase 4 entry notes:** `FoundationStatusView` is still the dashboard's placeholder content and
-should be deleted when real metric cards land. The dashboard already opens as a suppressed-launch
-`Window` from the menu bar panel and uses `ConsumerID.dashboard`. Persisted widget layout should
-reuse `PreferenceKey` + `MetricIdentifier` exactly as `menuBar.metrics` does.
+**Phase 6 entry notes:** clipboard history plugs into the launcher as one more
+`LauncherActionProvider` returning `.copyToPasteboard` results — the search service and UI need no
+changes. Monitoring means polling `NSPasteboard.general.changeCount` (there is no change
+notification); pick an interval deliberately, as it is a second always-on cost alongside the menu
+bar. Privacy rules from §37 are binding: never log clipboard contents, not even at `.debug`, and
+`LauncherActionRunner.copyToPasteboard` is already written to avoid it.
 
 ---
 

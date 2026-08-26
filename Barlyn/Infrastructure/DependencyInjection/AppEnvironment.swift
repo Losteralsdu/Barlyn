@@ -19,6 +19,11 @@ final class AppEnvironment {
     let metricSampler: MetricSampler
     let metricFormatter: MetricFormatter
     let menuBarConfiguration: MenuBarConfiguration
+    let dashboardConfiguration: DashboardConfiguration
+    let metricHistory: MetricHistory
+    let launcherSearch: LauncherSearchService
+    let quickLauncher: QuickLauncherController
+    let hotkeyService: HotkeyService
 
     private(set) var isBootstrapped = false
 
@@ -32,7 +37,9 @@ final class AppEnvironment {
     ) {
         self.preferences = preferences
         self.metricRegistry = metricRegistry
-        let sampler = MetricSampler(registry: metricRegistry)
+        let history = MetricHistory()
+        self.metricHistory = history
+        let sampler = MetricSampler(registry: metricRegistry, history: history)
         self.metricSampler = sampler
         self.metricFormatter = metricFormatter
         self.menuBarConfiguration = MenuBarConfiguration(
@@ -40,6 +47,24 @@ final class AppEnvironment {
             registry: metricRegistry,
             sampler: sampler
         )
+        self.dashboardConfiguration = DashboardConfiguration(
+            preferences: preferences,
+            registry: metricRegistry
+        )
+
+        let search = LauncherSearchService()
+        self.launcherSearch = search
+        self.hotkeyService = HotkeyService()
+        self.quickLauncher = QuickLauncherController(
+            searchService: search,
+            sampler: sampler,
+            registry: metricRegistry
+        )
+
+        // The launcher panel hosts a SwiftUI tree that needs this environment, but the
+        // environment owns the launcher. A closure breaks the cycle without either holding the
+        // other strongly at construction time.
+        quickLauncher.environmentProvider = { [unowned self] in self }
     }
 
     /// Environment backed by the user's real settings and real system APIs.
@@ -92,6 +117,9 @@ final class AppEnvironment {
         // are re-applied when they arrive below.
         menuBarConfiguration.apply()
 
+        registerLauncherProviders()
+        applyLauncherHotkey()
+
         deferredRegistration = Task { [metricRegistry, menuBarConfiguration] in
             // SMC key discovery enumerates every key the controller exposes (~3500 on the
             // development Mac, ~480 ms). It runs once per process and is cached inside
@@ -108,6 +136,42 @@ final class AppEnvironment {
             // A user may have selected an SMC metric for the menu bar; its demand can only be
             // honoured now that it is registered.
             menuBarConfiguration.apply()
+        }
+    }
+
+    /// The launcher's search sources. Phase 6 adds clipboard history and Phase 7 window actions
+    /// by appending here; neither the search service nor the UI changes.
+    private func registerLauncherProviders() {
+        launcherSearch.register(
+            MetricActionProvider(
+                registry: metricRegistry,
+                sampler: metricSampler,
+                formatter: metricFormatter
+            )
+        )
+        launcherSearch.register(CommandActionProvider())
+        launcherSearch.register(ApplicationActionProvider())
+    }
+
+    /// Registers the global shortcut that opens the launcher.
+    ///
+    /// A failure here is reported rather than swallowed: a launcher whose shortcut silently does
+    /// nothing is worse than one that says why.
+    func applyLauncherHotkey() {
+        guard preferences[PreferenceKeys.launcherEnabled] else {
+            hotkeyService.unregister(.quickLauncher)
+            return
+        }
+
+        let combination = preferences[PreferenceKeys.launcherHotkey]
+        do {
+            try hotkeyService.register(combination, for: .quickLauncher) { [weak self] in
+                self?.quickLauncher.toggle()
+            }
+        } catch {
+            AppLog.shortcuts.error(
+                "Could not register launcher hotkey: \(error.diagnosticDescription, privacy: .public)"
+            )
         }
     }
 
