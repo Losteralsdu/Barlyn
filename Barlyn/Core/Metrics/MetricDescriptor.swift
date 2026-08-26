@@ -10,6 +10,23 @@ nonisolated enum MetricCategory: String, Sendable, Hashable, Codable, CaseIterab
     case network
     case system
 
+    /// Default ordering for UI that has no user-defined layout yet.
+    ///
+    /// Exists because provider registration order is an implementation detail — providers that
+    /// need slow hardware probing register in a later wave (ADR-008) and would otherwise sort
+    /// to the bottom purely because they were slow to confirm.
+    var sortIndex: Int {
+        switch self {
+        case .processor: 0
+        case .memory: 1
+        case .thermal: 2
+        case .power: 3
+        case .storage: 4
+        case .network: 5
+        case .system: 6
+        }
+    }
+
     var displayName: String {
         switch self {
         case .processor: "Processor"

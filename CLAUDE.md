@@ -75,7 +75,9 @@ Barlyn/
 │   ├── Metrics/                MetricSampler + Providers/
 │   └── Preferences/            PreferenceStorage, PreferenceKey, PreferenceStore
 ├── Features/                   UI, one folder per feature
-│   └── Diagnostics/            FoundationStatusView (Phase 1 scaffold, replaced in Phase 4)
+│   ├── MenuBar/                MenuBarConfiguration, label + panel views
+│   ├── Settings/               SettingsView (General, Menu Bar tabs)
+│   └── Diagnostics/            FoundationStatusView (scaffold, replaced by Phase 4 dashboard)
 └── Assets.xcassets
 ```
 
@@ -94,7 +96,7 @@ MetricProvider (protocol, Sendable)
    ├── isSupported() async -> Bool    ← hardware probe; unsupported metrics are not registered
    └── read() async throws(MetricError) -> MetricReading
                  │
-        MetricRegistry (@MainActor @Observable)   ← catalogue, registration-ordered
+        MetricRegistry (@MainActor @Observable)   ← catalogue, category-ordered
                  │
         MetricSampler (@MainActor @Observable)    ← demand-driven polling, one Task per metric
                  │
@@ -103,10 +105,11 @@ MetricProvider (protocol, Sendable)
         Any UI: menu bar / dashboard / quick launcher
 ```
 
-**Adding a metric = write a provider + append it to `AppEnvironment.registerMetricProviders()`.**
-No UI, formatter or preference change is required. `FoundationStatusView` is written entirely
-against `MetricDescriptor`, so it renders new metrics with zero edits — this is enforced by
-construction, not convention.
+**Adding a metric = write a provider + append it to `AppEnvironment.bootstrap()`.**
+No UI, formatter or preference change is required. Every surface — menu bar label, menu bar panel,
+Settings, `FoundationStatusView` — is written entirely against `MetricDescriptor`. Phase 2
+demonstrated this: GPU temperature and fan speed were added as providers only, and appeared in all
+four surfaces with no UI edits.
 
 Key types:
 
@@ -121,10 +124,24 @@ Key types:
 ### Sampling and cost
 
 `MetricSampler` polls only what a consumer has declared demand for
-(`setDemand(_:for: .menuBar / .dashboard / .quickLauncher / .diagnostics)`). Demand from all
-consumers is unioned; when the last consumer releases a metric its task is cancelled **and its
-value discarded**, so a stale number can never be displayed. Intervals are clamped to
-`AppConfiguration` bounds (floor 500 ms, ceiling 60 s).
+(`setDemand(_:for: .menuBar / .menuBarPopover / .dashboard / .quickLauncher / .diagnostics)`).
+Demand from all consumers is unioned; when the last consumer releases a metric its task is
+cancelled **and its value discarded**, so a stale number can never be displayed.
+
+`.menuBar` is the exception to "demand is released when UI closes": the label is visible for the
+app's whole lifetime, so its demand never lapses. That makes it the only continuous energy cost in
+the app, which is why the update interval is user-configurable —
+`MetricSampler.setIntervalOverride(_:for:)`, applied by `MenuBarConfiguration`. All intervals,
+override or not, are clamped to `AppConfiguration` bounds (floor 500 ms, ceiling 60 s), so no
+persisted or hand-edited preference can poll faster than the floor.
+
+### Menu bar (Phase 2)
+
+`MenuBarExtra` with `.menuBarExtraStyle(.window)`, plus `INFOPLIST_KEY_LSUIElement = YES` — an
+agent app with no Dock icon. `MenuBarConfiguration` is the single place preferences become sampler
+demand; it filters the user's chosen identifiers against what is actually registered, so a metric
+whose hardware is absent is skipped rather than shown permanently broken. The dashboard `Window`
+uses `.defaultLaunchBehavior(.suppressed)` so nothing appears on screen at login.
 
 ### Dependency injection
 
@@ -269,10 +286,11 @@ Centralise in a `PermissionManager` (Phase 7). `PermissionKind` already exists i
    Distribution is Developer ID + notarization.
 2. **SMC sensor naming is inferred**, not documented; may differ on other Macs and may break on
    future chips. Mitigation: runtime discovery, range checks, `MetricProvenance` in the UI.
-3. **Nested git repository** — `Barlyn/` (the *source* folder) contains its own `.git` pointing at
-   `github.com/Losteralsdu/Barlyn.git`, inside the outer repo at the project root. This appeared
-   mid-session on 2026-08-09 and is **unresolved**; it also puts `README.md`/`.gitattributes`
-   inside a synchronized group. Needs a human decision (§11).
+3. ~~Nested git repository~~ **Resolved 2026-08-26.** `Barlyn/` (the source folder) had its own
+   `.git` tracking only that subfolder — a clone of it could not build, having no `.xcodeproj` and
+   no tests. It was fully pushed, so it was removed and the project-root repo (which has the real
+   history) took over its GitHub remote. `README.md` and `.gitattributes` moved to the project
+   root, out of the synchronized group, so `README.md` is no longer copied into the app bundle.
 4. **`@Observable` granularity in `PreferenceStore`** — the whole cache dictionary is one
    observation unit, so any write invalidates readers of any key. Fine at human-speed settings;
    never put high-frequency values there.
@@ -360,6 +378,18 @@ wrong half the time.
 *unavailable* rather than 0 W — there is no adapter draw to measure, which is not the same
 statement as "the Mac is using no power".
 
+### ADR-010 — Menu bar demand is permanent; the interval is the user's energy control
+**Date:** 2026-08-26
+**Decision:** `ConsumerID.menuBar` holds sampler demand for the app's entire lifetime rather than
+acquiring and releasing it like every other consumer. The menu bar panel uses a separate
+`.menuBarPopover` consumer that releases on close.
+**Reason:** The menu bar label is always visible, so its metrics must always be current — there is
+no "closed" state to release on. That makes it the app's only continuous polling cost, so it gets
+an explicit user-facing update interval instead of a hidden default.
+**Consequence:** Barlyn always samples something while running. The floor in `AppConfiguration`
+caps the worst case, and users who want zero background polling can deselect every menu bar metric,
+which leaves the label as a static icon and demand genuinely empty.
+
 ### ADR-007 — Swift Testing over XCTest
 **Date:** 2026-08-10
 **Decision:** New tests use `import Testing` (`@Suite` / `@Test` / `#expect`). XCTest boilerplate
@@ -392,12 +422,26 @@ supported direction on Xcode 26. UI tests, if reintroduced, still require XCUITe
    `host_page_size(mach_host_self(), &size)`.
 10. **`Duration` has no `.milliseconds` accessor** — destructure `components` (seconds,
     attoseconds). A small extension lives in `SMCService.swift`.
+11. **`CGWindowListCopyWindowInfo` does not report another process's menu bar status item** on
+    macOS 26, and reports no windows at all for an accessory app with nothing open. It is not a
+    usable oracle for "did the `MenuBarExtra` appear". To verify that, log from the label view's
+    `body` and read the log — a repeatedly-evaluated body is the status item live-updating.
+12. **A `MenuBarExtra` label is not a dependable place for one-time lifecycle work.** Bootstrapping
+    is kicked off from `BarlynApp.init` instead, because the panel may never be opened.
 
 ---
 
 ## 10. Testing strategy
 
-Swift Testing, 54 tests, all passing. Coverage:
+Swift Testing, 63 tests, all passing. Coverage:
+
+**Phase 2 menu bar:**
+- Preferences naming unregistered metrics are filtered out, not rendered broken.
+- Visible order follows the user's order, not registration order.
+- Toggling visibility adds and removes sampler demand; adding twice does not duplicate.
+- Reordering clamps at both ends instead of wrapping.
+- The update interval reaches the sampler and is clamped to the configured floor.
+- Descriptors sort by category regardless of which registration wave they arrived in.
 
 **Phase 3 providers** (real hardware; assertions are on invariants, never machine-specific values):
 - CPU: first sample must report `notYetSampled` (never usage-since-boot); `100 − idle` agrees with
@@ -431,20 +475,14 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 
 ## 11. Open tasks / technical debt
 
-- [ ] **Resolve the nested git repository** (§7.3) — needs a human decision.
 - [ ] **Confirm the memory "used" figure against Activity Monitor's UI** (§5). Composition follows
       Apple's description and is self-consistent, but has not been eyeballed side by side.
-- [ ] GPU temperature (`Tg…`) and fan RPM (`F…Ac`) are already discovered and classified by
-      `SMCService` but have no providers yet — roughly 20 lines each.
-- [ ] CPU temperature registers last because of two-wave registration (ADR-008); revisit default
-      ordering when Phase 4 introduces user-defined layout.
 - [ ] `FoundationStatusView` is scaffolding; delete when Phase 4's dashboard lands.
-- [ ] `PreferenceKeys.menuBarMetrics` defaults to `[.cpuUsage, .memoryUsage]`, whose providers do
-      not exist until Phase 3. Inert by design, but revisit the default when they land.
 - [ ] `AppInfo`/`AppConfiguration` values are English literals; move to a String Catalog before
       any localisation work.
 - [ ] UI test target exists but is empty (template tests removed).
-- [ ] No `.gitignore` — `xcuserdata/` is currently untracked noise.
+- [ ] The menu bar panel is the only place the dashboard can be opened from; there is no global
+      hotkey for it until Phase 8.
 
 ---
 
@@ -453,9 +491,9 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Foundation: lifecycle, DI, logging, config, models, protocols, preferences, tests | **Done** |
-| 2 | Menu bar: `MenuBarExtra`, popover, compact metrics, configurable visibility | Next |
+| 2 | Menu bar: `MenuBarExtra`, panel, compact metrics, configurable visibility | **Done** |
 | 3 | System metrics: CPU, RAM, battery power, temperature | **Done** |
-| 4 | Dashboard: window, metric cards, widget config, graph architecture | Pending |
+| 4 | Dashboard: window, metric cards, widget config, graph architecture | Next |
 | 5 | Quick Launcher: global hotkey, search, action providers | Pending |
 | 6 | Clipboard: monitoring, persistence, search, privacy controls | Pending |
 | 7 | Window management: Accessibility, positioning, multi-display | Pending |
@@ -464,10 +502,10 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 | 10 | Polish: UX, a11y, performance, error handling | Pending |
 | 11 | Future infrastructure: auth/sync/remote-config/analytics abstractions | Pending |
 
-**Phase 2 entry notes:** switch to `MenuBarExtra` + `INFOPLIST_KEY_LSUIElement = YES` (agent app,
-no Dock icon); `AppDelegate.applicationShouldTerminateAfterLastWindowClosed` must then return
-`false`. Menu bar consumer uses `MetricSampler.ConsumerID.menuBar` and must release demand when
-the popover closes.
+**Phase 4 entry notes:** `FoundationStatusView` is still the dashboard's placeholder content and
+should be deleted when real metric cards land. The dashboard already opens as a suppressed-launch
+`Window` from the menu bar panel and uses `ConsumerID.dashboard`. Persisted widget layout should
+reuse `PreferenceKey` + `MetricIdentifier` exactly as `menuBar.metrics` does.
 
 ---
 

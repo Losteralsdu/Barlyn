@@ -70,7 +70,7 @@ nonisolated struct CPUTemperatureMetricProvider: MetricProvider {
     /// metric works across chip families without a hard-coded per-model table.
     private static func temperatures(from smc: SMCService) async -> [Double] {
         for family in [SMCService.SensorFamily.cpuPerformanceCore, .cpuEfficiencyCore, .cpuIntel] {
-            let readings = await smc.readTemperatures(in: family)
+            let readings = await smc.readValues(in: family, unit: .celsius)
             if !readings.isEmpty { return readings }
         }
         return []

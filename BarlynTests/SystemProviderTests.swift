@@ -102,6 +102,9 @@ struct SystemProviderTests {
         }
 
         environment.metricSampler.clearDemand(for: .dashboard)
-        #expect(environment.metricSampler.activeMetrics.isEmpty)
+        // Not empty: the menu bar holds demand for its own metrics for the app's lifetime, so
+        // releasing the dashboard must leave exactly that set still sampling and nothing more.
+        let menuBarMetrics = Set(environment.menuBarConfiguration.visibleMetrics.map(\.id))
+        #expect(environment.metricSampler.activeMetrics == menuBarMetrics)
     }
 }

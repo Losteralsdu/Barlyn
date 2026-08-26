@@ -172,7 +172,7 @@ struct SMCServiceTests {
         #expect(sensors.allSatisfy { $0.key.count == 4 })
         #expect(sensors.allSatisfy { $0.key.hasPrefix("Tp") })
 
-        let temperatures = await smc.readTemperatures(in: .cpuPerformanceCore)
+        let temperatures = await smc.readValues(in: .cpuPerformanceCore, unit: .celsius)
         #expect(!temperatures.isEmpty, "Sensors were discovered but none produced a usable value")
         // Every value that survives must already be plausible — that filtering is the point.
         #expect(temperatures.allSatisfy { MetricValue.celsius($0).isPlausible })

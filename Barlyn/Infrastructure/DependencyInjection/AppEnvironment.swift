@@ -18,6 +18,7 @@ final class AppEnvironment {
     let metricRegistry: MetricRegistry
     let metricSampler: MetricSampler
     let metricFormatter: MetricFormatter
+    let menuBarConfiguration: MenuBarConfiguration
 
     private(set) var isBootstrapped = false
 
@@ -31,8 +32,14 @@ final class AppEnvironment {
     ) {
         self.preferences = preferences
         self.metricRegistry = metricRegistry
-        self.metricSampler = MetricSampler(registry: metricRegistry)
+        let sampler = MetricSampler(registry: metricRegistry)
+        self.metricSampler = sampler
         self.metricFormatter = metricFormatter
+        self.menuBarConfiguration = MenuBarConfiguration(
+            preferences: preferences,
+            registry: metricRegistry,
+            sampler: sampler
+        )
     }
 
     /// Environment backed by the user's real settings and real system APIs.
@@ -81,12 +88,26 @@ final class AppEnvironment {
             "Barlyn \(AppInfo.versionDescription, privacy: .public) bootstrapped with \(self.metricRegistry.count) metrics"
         )
 
-        deferredRegistration = Task { [metricRegistry] in
+        // Menu bar demand can be applied as soon as the first wave exists; SMC-backed metrics
+        // are re-applied when they arrive below.
+        menuBarConfiguration.apply()
+
+        deferredRegistration = Task { [metricRegistry, menuBarConfiguration] in
             // SMC key discovery enumerates every key the controller exposes (~3500 on the
             // development Mac, ~480 ms). It runs once per process and is cached inside
-            // `SMCService`; only the selected sensors are re-read per sample.
+            // `SMCService`, and one instance is shared by every SMC-backed provider so the cost
+            // is paid exactly once.
             let smc = SMCService()
-            await metricRegistry.registerIfSupported(CPUTemperatureMetricProvider(smc: smc))
+            for provider in [
+                CPUTemperatureMetricProvider(smc: smc) as any MetricProvider,
+                GPUTemperatureMetricProvider(smc: smc),
+                FanSpeedMetricProvider(smc: smc),
+            ] {
+                await metricRegistry.registerIfSupported(provider)
+            }
+            // A user may have selected an SMC metric for the menu bar; its demand can only be
+            // honoured now that it is registered.
+            menuBarConfiguration.apply()
         }
     }
 

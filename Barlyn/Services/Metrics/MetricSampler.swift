@@ -18,7 +18,11 @@ final class MetricSampler {
         let rawValue: String
         init(_ rawValue: String) { self.rawValue = rawValue }
 
+        /// The always-visible menu bar label. Its demand persists for the app's lifetime,
+        /// which is why the update interval is user-configurable.
         static let menuBar = ConsumerID("menuBar")
+        /// The menu bar panel, active only while it is open.
+        static let menuBarPopover = ConsumerID("menuBarPopover")
         static let dashboard = ConsumerID("dashboard")
         static let quickLauncher = ConsumerID("quickLauncher")
         static let diagnostics = ConsumerID("diagnostics")
@@ -35,6 +39,9 @@ final class MetricSampler {
     /// Last error logged per metric, so a persistently failing sensor logs once instead of
     /// every interval for days.
     private var lastLoggedError: [MetricIdentifier: MetricError] = [:]
+
+    /// User-configured cadences, overriding each provider's preferred interval.
+    private var intervalOverrides: [MetricIdentifier: Duration] = [:]
 
     init(registry: MetricRegistry) {
         self.registry = registry
@@ -78,6 +85,30 @@ final class MetricSampler {
         readings[id] ?? .notYetSampled
     }
 
+    /// Overrides a metric's sampling cadence, or clears the override with `nil`.
+    ///
+    /// Backs the user-facing update-interval setting. The value is clamped to
+    /// `AppConfiguration` bounds, so no preference — however it was persisted or corrupted — can
+    /// make the app poll IOKit faster than the floor allows.
+    func setIntervalOverride(_ interval: Duration?, for id: MetricIdentifier) {
+        let clamped = interval.map(AppConfiguration.clampSampleInterval)
+        guard intervalOverrides[id] != clamped else { return }
+        intervalOverrides[id] = clamped
+
+        // Restart an already-running task so the new cadence takes effect immediately rather
+        // than after the current (possibly 60 s) sleep completes.
+        if let provider = registry.provider(for: id), samplingTasks[id] != nil {
+            samplingTasks.removeValue(forKey: id)?.cancel()
+            samplingTasks[id] = makeSamplingTask(for: provider)
+        }
+    }
+
+    /// Cadence actually used for a metric: user override if set, otherwise the provider's
+    /// preference, always clamped.
+    func effectiveInterval(for descriptor: MetricDescriptor) -> Duration {
+        intervalOverrides[descriptor.id] ?? descriptor.effectiveInterval
+    }
+
     // MARK: - Reconciliation
 
     private func reconcile() {
@@ -104,7 +135,7 @@ final class MetricSampler {
 
     private func makeSamplingTask(for provider: any MetricProvider) -> Task<Void, Never> {
         let id = provider.descriptor.id
-        let interval = provider.descriptor.effectiveInterval
+        let interval = effectiveInterval(for: provider.descriptor)
 
         return Task { [weak self] in
             while !Task.isCancelled {

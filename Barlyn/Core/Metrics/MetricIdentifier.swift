@@ -30,5 +30,7 @@ nonisolated extension MetricIdentifier {
     static let systemPowerInput = MetricIdentifier("power.systemInput")
     static let cpuTemperature = MetricIdentifier("cpu.temperature")
     static let thermalPressure = MetricIdentifier("thermal.pressure")
+    static let gpuTemperature = MetricIdentifier("gpu.temperature")
+    static let fanSpeed = MetricIdentifier("fan.speed")
     static let loadAverage = MetricIdentifier("system.loadAverage")
 }

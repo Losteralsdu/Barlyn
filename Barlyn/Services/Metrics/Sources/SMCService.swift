@@ -79,15 +79,24 @@ actor SMCService {
         allSensors().filter { $0.family == family }
     }
 
-    /// Reads every sensor in a family, silently dropping implausible readings.
+    /// Reads every sensor in a family, keeping only values plausible for `unit`.
     ///
     /// Dropping rather than reporting is correct here: an inactive channel returning a sentinel
     /// is normal hardware behaviour, not an error worth surfacing. If *every* sensor in a family
     /// is implausible the caller sees an empty array and reports the metric unavailable.
-    func readTemperatures(in family: SensorFamily) -> [Double] {
+    func readValues(in family: SensorFamily, unit: MetricUnit) -> [Double] {
         sensors(in: family).compactMap { sensor in
-            guard let celsius = readDouble(sensor) else { return nil }
-            return MetricValue.celsius(celsius).isPlausible ? celsius : nil
+            guard let value = readDouble(sensor) else { return nil }
+            return MetricValue(value, unit).isPlausible ? value : nil
+        }
+    }
+
+    /// Reads a family, keyed by SMC key, for UI that needs to distinguish individual sensors
+    /// (fan 1 versus fan 2) rather than aggregate them.
+    func readKeyedValues(in family: SensorFamily, unit: MetricUnit) -> [(key: String, value: Double)] {
+        sensors(in: family).compactMap { sensor in
+            guard let value = readDouble(sensor), MetricValue(value, unit).isPlausible else { return nil }
+            return (sensor.key, value)
         }
     }
 

@@ -13,9 +13,24 @@ import OSLog
 final class MetricRegistry {
     private var providersByID: [MetricIdentifier: any MetricProvider] = [:]
 
-    /// Descriptors in registration order. Stable ordering matters: it is the default order of
-    /// menu bar items and dashboard cards before the user reorders them.
-    private(set) var descriptors: [MetricDescriptor] = []
+    /// Registration order, which is an implementation detail — see `descriptors`.
+    private var registered: [MetricDescriptor] = []
+
+    /// Descriptors in default display order: grouped by category, and stable (registration
+    /// order) within a category.
+    ///
+    /// Sorting by category rather than arrival keeps the layout deterministic even though
+    /// hardware-probed providers register in a later wave (ADR-008). Swift's `sorted(by:)` is
+    /// not a stable sort, so registration index is folded into the comparison explicitly.
+    var descriptors: [MetricDescriptor] {
+        registered.enumerated()
+            .sorted { left, right in
+                let leftKey = (left.element.category.sortIndex, left.offset)
+                let rightKey = (right.element.category.sortIndex, right.offset)
+                return leftKey < rightKey
+            }
+            .map(\.element)
+    }
 
     init() {}
 
@@ -32,7 +47,7 @@ final class MetricRegistry {
             return false
         }
         providersByID[id] = provider
-        descriptors.append(provider.descriptor)
+        registered.append(provider.descriptor)
         AppLog.metrics.debug("Registered metric '\(id.rawValue, privacy: .public)'")
         return true
     }

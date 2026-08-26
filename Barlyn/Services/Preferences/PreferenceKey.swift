@@ -23,13 +23,33 @@ nonisolated enum PreferenceKeys {
     static let hasCompletedOnboarding = PreferenceKey("general.hasCompletedOnboarding", default: false)
     static let appearance = PreferenceKey("general.appearance", default: AppearancePreference.system)
 
-    // MARK: Menu bar (Phase 2)
+    // MARK: Menu bar
     /// Order matters and is user-controlled, hence an array rather than a set.
     static let menuBarMetrics = PreferenceKey<[MetricIdentifier]>(
         "menuBar.metrics",
         default: [.cpuUsage, .memoryUsage]
     )
+    /// Seconds. Applied as a `MetricSampler` interval override and clamped by
+    /// `AppConfiguration`, so a corrupt value cannot make the app poll faster than the floor.
     static let menuBarUpdateInterval = PreferenceKey("menuBar.updateIntervalSeconds", default: 2.0)
+    static let menuBarStyle = PreferenceKey("menuBar.style", default: MenuBarStyle.compact)
+}
+
+/// How much each metric shows in the menu bar itself, where horizontal space is scarce.
+nonisolated enum MenuBarStyle: String, Codable, Sendable, CaseIterable, Identifiable {
+    /// Values only: `24%  49%`.
+    case compact
+    /// Short name plus value: `CPU 24%  RAM 49%`.
+    case labelled
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .compact: "Compact"
+        case .labelled: "With Labels"
+        }
+    }
 }
 
 /// User-selectable appearance, mapped to `NSAppearance` at the UI boundary.

@@ -3,10 +3,8 @@ import OSLog
 
 /// AppKit lifecycle hooks that SwiftUI's `App` protocol does not expose.
 ///
-/// Kept deliberately thin. It exists now because the things Barlyn will need shortly —
-/// installing the menu bar item, deciding the activation policy, registering global hotkeys,
-/// tearing down event taps on termination — are all AppKit-level concerns with no SwiftUI
-/// equivalent. Those get wired here in later phases; none of them belong in a View.
+/// Kept deliberately thin. Global hotkey registration (Phase 5/8) and event tap teardown will
+/// land here; none of it belongs in a View.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppLog.app.notice("Application did finish launching")
@@ -16,9 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppLog.app.notice("Application will terminate")
     }
 
-    /// Once the app becomes a menu bar agent (Phase 2) there will be no Dock icon, so this
-    /// currently-default behaviour is stated explicitly to make the later change deliberate.
+    /// Barlyn is a menu bar agent: closing the dashboard or Settings must not quit it. The app
+    /// stays alive in the menu bar until the user explicitly chooses Quit.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 }
