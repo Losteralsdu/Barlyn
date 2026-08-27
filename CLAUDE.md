@@ -36,7 +36,8 @@ UI. See ADR-004.
 | Member import visibility | YES (upcoming feature — see §9) |
 | App Sandbox | **NO** (see ADR-001) |
 | Hardened Runtime | YES |
-| Team / bundle ID |  / `LSchirmer.Barlyn` |
+| Bundle ID | `LSchirmer.Barlyn` |
+| Signing | `DEVELOPMENT_TEAM` is blank in the project; debug builds sign ad-hoc. Set your own team locally or via `xcodebuild DEVELOPMENT_TEAM=…` — do not commit it. |
 | Third-party dependencies | **none** |
 
 **Xcode project uses `fileSystemSynchronizedGroups` (objectVersion 77).** Adding a `.swift` file
