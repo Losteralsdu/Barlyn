@@ -8,7 +8,8 @@
 ## 1. Purpose
 
 Barlyn is a native macOS power-user suite: menu bar system monitor, dashboard, Spotlight-like
-quick launcher, clipboard history, window management and a central global-shortcut system.
+quick launcher, clipboard history and a central global-shortcut system. **Window management is
+explicitly out of scope** — see ADR-017.
 
 Personal use first, but built to commercial standards: local-first, privacy-preserving,
 modular, testable, and cheap enough to run continuously for days.
@@ -67,6 +68,7 @@ Barlyn/
 ├── Core/                       Pure logic. No system APIs, no SwiftUI. Fully unit-testable.
 │   ├── Errors/                 BarlynError protocol, MetricError, PersistenceError, PermissionKind
 │   ├── Launcher/               LauncherResult, LauncherAction, provider protocol, FuzzyMatcher
+│   ├── Clipboard/              ClipboardItem, ClipboardContent
 │   ├── Shortcuts/              KeyCombination, ModifierKeys
 │   └── Metrics/                Identifier, Unit, Value, Descriptor, Reading, Provider, Registry,
 │                               Formatter, History, States
@@ -78,12 +80,13 @@ Barlyn/
 │   ├── Metrics/                MetricSampler + Providers/ + Sources/ (SMC, PowerSource)
 │   ├── Launcher/               LauncherSearchService, LauncherActionRunner + Providers/
 │   ├── Shortcuts/              HotkeyService (Carbon)
+│   ├── Clipboard/              ClipboardService, ClipboardHistoryStorage
 │   └── Preferences/            PreferenceStorage, PreferenceKey, PreferenceStore
 ├── Features/                   UI, one folder per feature
 │   ├── MenuBar/                MenuBarConfiguration, label + panel views
 │   ├── Dashboard/              DashboardConfiguration, DashboardView, MetricCard, MetricChartView
 │   ├── QuickLauncher/          QuickLauncherController, Panel (NSPanel), View
-│   └── Settings/               SettingsView (General, Menu Bar, Dashboard, Quick Launcher tabs)
+│   └── Settings/               SettingsView (General, Menu Bar, Dashboard, Launcher, Clipboard)
 └── Assets.xcassets
 ```
 
@@ -113,9 +116,9 @@ MetricProvider (protocol, Sendable)
 
 **Adding a metric = write a provider + append it to `AppEnvironment.bootstrap()`.**
 No UI, formatter or preference change is required. Every surface — menu bar label, menu bar panel,
-Settings, `FoundationStatusView` — is written entirely against `MetricDescriptor`. Phase 2
-demonstrated this: GPU temperature and fan speed were added as providers only, and appeared in all
-four surfaces with no UI edits.
+dashboard cards, Settings and the Quick Launcher — is written entirely against `MetricDescriptor`.
+Phase 2 demonstrated this concretely: GPU temperature and fan speed were added as providers only,
+and appeared everywhere with no UI edits.
 
 Key types:
 
@@ -154,6 +157,18 @@ drawn across a sampling gap would imply continuity that was never measured. Noth
 disk; longer retention means giving `MetricHistory` a backend and changing nothing above it.
 Charts use Swift Charts (an Apple framework, not a dependency) and render nothing below two
 samples, because a single point is not a trend.
+
+### Clipboard (Phase 6)
+
+`ClipboardService` polls `NSPasteboard.changeCount` (there is no change notification) and keeps a
+bounded history behind `ClipboardHistoryStorage`. Privacy is enforced in code, not prose: entries
+carrying an `org.nspasteboard.*` concealed/transient marker are skipped, contents never reach the
+log at any level, the store is `0600`, and pausing tears the polling task down rather than ignoring
+ticks. See ADR-015 and ADR-016.
+
+It reaches the launcher as one more `LauncherActionProvider` returning `.copyToPasteboard`
+results — the search service, ranking and UI needed no changes, which is the provider architecture
+paying off a phase after it was built.
 
 ### Menu bar (Phase 2)
 
@@ -304,23 +319,47 @@ also holds ~117 background agents. Filtering on `LSUIElement` / `LSBackgroundOnl
 hand-maintained blocklist. Result on this machine: **130 launchable apps indexed in 20 ms**, cached
 for 5 minutes. Barlyn excludes itself, correctly, being `LSUIElement`.
 
-### Not yet investigated (do before Phase 6/7)
-Accessibility `AXUIElement` window control. `NSPasteboard.changeCount` polling.
-`NSScreen` multi-display geometry.
+### Clipboard — **verified** (implemented, Phase 6)
+There is **no pasteboard-change notification**; `NSPasteboard.changeCount` polling is the only
+option. Measured on this machine: **0.73 µs per `changeCount` read** (20,000 reads in 14.6 ms), so
+the poll interval is a responsiveness decision, not an energy one. Default 0.5 s.
+
+| Finding | Detail |
+|---|---|
+| Our own write | Increments `changeCount` by exactly **1** — self-capture is suppressible by recording the expected count |
+| `org.nspasteboard.ConcealedType` | Detectable via `data(forType:)`; this is how password managers opt out |
+| **A URL-only item has no `.string` type** | `string(forType: .string)` returns **nil** for a copied URL — a text-only monitor silently misses every link. Read `readObjects(forClasses: [NSURL.self])` first |
+| Source application | Not exposed by macOS. `frontmostApplication` at capture time is a *heuristic* and is labelled as such in the model |
+
+End-to-end verified in the running app: a copied string and a copied URL were stored as `.text`
+and `.url` respectively, the history file is `-rw-------`, and the marker string appeared **0
+times** in Barlyn's log and 0 times in the system-wide log.
+
+### No longer relevant
+Accessibility `AXUIElement` window control and `NSScreen` multi-display geometry were the open
+investigations for Phase 7. Both are dropped with it (ADR-017) and were never probed.
 
 ---
 
 ## 6. Permissions
 
+**Barlyn currently requires no permissions at all.** Accessibility was needed only by window
+management, which is dropped (ADR-017); Carbon hotkeys need nothing; metrics, SMC and clipboard
+need nothing beyond running unsandboxed.
+
 | Permission | Needed for | Status |
 |---|---|---|
-| Accessibility | Window management (Phase 7), reading focused window | Not yet requested |
-| Input Monitoring | Possibly some shortcut scopes | Likely avoidable via Carbon hotkeys |
-| — | System metrics, SMC, clipboard | **No permission required** (unsandboxed) |
+| — | Metrics, SMC, clipboard, global hotkeys, app launching | **None required** |
+| Accessibility | Nothing, since window management was dropped | Not requested |
+| Input Monitoring | Nothing — Carbon hotkeys avoid it entirely | Not requested |
 
-Centralise in a `PermissionManager` (Phase 7). `PermissionKind` already exists in
-`Core/Errors/BarlynError.swift` with System Settings deep links. Never scatter
-`AXIsProcessTrusted()` calls through views.
+The `PermissionManager` §30 asks for is therefore **not built**: there is no permission to manage,
+and an abstraction over an empty set is the kind of speculative structure §49 warns against.
+`PermissionKind` remains in `Core/Errors/BarlynError.swift` as a small, already-written extension
+point should a future feature need one.
+
+This is worth stating as a product property: Barlyn asks for nothing, which is unusual for a Mac
+utility in this category and is a direct consequence of dropping window management.
 
 ---
 
@@ -480,6 +519,44 @@ file.
 **Consequence:** Adding a new kind of action means adding a case and handling it in the runner,
 rather than a provider inventing its own behaviour — which is the point.
 
+### ADR-015 — Clipboard privacy is enforced in code, not documented in prose
+**Date:** 2026-08-27
+**Decision:** `ClipboardService` skips any pasteboard entry carrying an `org.nspasteboard.*`
+concealed/transient marker, never logs contents at any level, stores history `0600`, and tears the
+polling task down when paused rather than merely ignoring ticks. Tests assert each of these.
+**Reason:** §21 and §37 are the strictest requirements in the specification, and "we are careful"
+is not a mechanism. Honouring the platform's existing opt-out marker also avoids a hand-maintained
+list of password-manager bundle ids that would rot immediately.
+**Consequence:** Entries from apps that set the marker are invisible to Barlyn, by design and with
+no user-facing setting to override it.
+
+### ADR-016 — Clipboard history is stored unencrypted, and that is recorded as debt
+**Date:** 2026-08-27
+**Decision:** History is a JSON file in Application Support with `0600` permissions, not encrypted.
+**Reason:** Encryption needs a key, and the only sensible home for one is the Keychain, which
+belongs with the credential work in Phase 11. Inventing a bespoke key store here would be worse
+than waiting.
+**Consequence:** The most sensitive thing Barlyn stores is readable by anything running as the
+user. Settings says so in plain language rather than implying the history is protected, and it is
+tracked as an open task.
+
+### ADR-017 — Window management is out of scope
+**Date:** 2026-08-27
+**Decision:** Drop Phase 7 entirely. Barlyn does not move, resize or snap other apps' windows.
+**Reason:** Product decision by the owner — window management will live in a separate application.
+**Consequences, which reach further than one phase:**
+- **Barlyn now requires no permissions at all.** Accessibility was needed only by this feature, so
+  the `PermissionManager` §30 asks for is not built: there is nothing to manage, and an abstraction
+  over an empty set is speculative structure.
+- `AXUIElement` and `NSScreen` multi-display geometry were never probed and are now moot.
+- **ADR-001 still stands.** The sandbox remains disabled because `IOServiceOpen` on `AppleSMC`
+  (temperature, fan, power rails) and `/Applications` enumeration both require it. Window
+  management was one of three justifications, not the only one, so Mac App Store distribution does
+  not become available.
+- Phase 8 shrinks: the `window.move*` shortcuts §28 lists no longer exist, leaving a handful of
+  app-level shortcuts and making a heavyweight central manager unwarranted.
+- Phase 9 shrinks: the onboarding permission step disappears.
+
 ### ADR-007 — Swift Testing over XCTest
 **Date:** 2026-08-10
 **Decision:** New tests use `import Testing` (`@Suite` / `@Test` / `#expect`). XCTest boilerplate
@@ -532,12 +609,30 @@ supported direction on Xcode 26. UI tests, if reintroduced, still require XCUITe
 15. **`xcrun xcresulttool` will not readily surface a Swift Testing failure message.** The fastest
     route to a real diagnosis is a temporary test that writes its findings to a file (see also
     gotcha 8).
+16. **A URL on the pasteboard has no `.string` representation.** `string(forType: .string)` returns
+    nil for an item written as a URL, so URL reading must come first. Verified with a probe.
+17. **Never test against `NSPasteboard.general`.** It would read and clobber whatever the developer
+    has copied. `ClipboardTests` creates a uniquely-named private pasteboard per test.
+18. **`Mutex<Void>` closures still take a parameter** — `lock.withLock { _ in … }`, not
+    `lock.withLock { … }`.
 
 ---
 
 ## 10. Testing strategy
 
-Swift Testing, 103 tests, all passing. Coverage:
+Swift Testing, 125 tests, all passing. Coverage:
+
+**Phase 6 clipboard** (all against a private `NSPasteboard`, never `.general`):
+- Privacy: concealed/transient/auto-generated markers suppress recording entirely; pausing stops
+  capture and resuming does **not** backfill what was copied during the pause; clearing wipes
+  memory and storage.
+- Capture: text and URLs both recorded (a URL-only item has no `.string` type); a link copied as
+  plain text is still recognised as a URL; re-copying moves an entry to the top instead of
+  duplicating; an unchanged pasteboard is not re-recorded.
+- Limits: history is capped oldest-first, and lowering the limit trims immediately.
+- Restoring an entry writes it back without re-capturing it as a new copy.
+- Launcher: entries become `.copyToPasteboard` results; a blank launcher offers only a few recent
+  entries and ranks them below metrics and commands.
 
 **Phase 5 quick launcher:**
 - Fuzzy matching tiers: exact > prefix > word-boundary > contains > subsequence; shorter
@@ -614,8 +709,16 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 - [ ] UI test target exists but is empty (template tests removed).
 - [ ] The launcher shortcut is fixed at ⌥Space until Phase 8 adds the recorder; Settings shows it
       read-only.
-- [ ] Only the launcher shortcut exists; window and clipboard shortcuts arrive with their phases.
+- [ ] Only the launcher shortcut exists. With window management dropped (ADR-017) the remaining
+      candidates are: open dashboard, toggle clipboard recording, open launcher scoped to clipboard.
 - [ ] `ApplicationActionProvider` refreshes on a 5-minute TTL rather than watching for installs.
+- [ ] **Clipboard history is not encrypted at rest** (ADR-016). Needs a Keychain-held key; revisit
+      with Phase 11's credential work.
+- [ ] Clipboard supports text and URLs only. Images, files and rich text are modelled for
+      (`ClipboardContent` is an enum) but not implemented; large payloads should go to files on
+      disk referenced by id rather than inline in the JSON.
+- [ ] The per-app ignore list §21 asks for is designed for (`sourceBundleIdentifier` is captured)
+      but has no UI. Note the field is a frontmost-app heuristic, not the true owner.
 
 ---
 
@@ -628,19 +731,27 @@ Rule: test *our* logic around Apple's frameworks, never Apple's frameworks.
 | 3 | System metrics: CPU, RAM, battery power, temperature | **Done** |
 | 4 | Dashboard: window, metric cards, widget config, graph architecture | **Done** |
 | 5 | Quick Launcher: global hotkey, search, action providers | **Done** |
-| 6 | Clipboard: monitoring, persistence, search, privacy controls | Next |
-| 7 | Window management: Accessibility, positioning, multi-display | Pending |
-| 8 | Shortcut system: central manager, recorder, conflict detection | Pending |
+| 6 | Clipboard: monitoring, persistence, search, privacy controls | **Done** |
+| 7 | ~~Window management~~ | **Dropped** (ADR-017) |
+| 8 | Shortcut system: recorder, customisable shortcuts, conflict detection | Next |
 | 9 | Onboarding | Pending |
 | 10 | Polish: UX, a11y, performance, error handling | Pending |
 | 11 | Future infrastructure: auth/sync/remote-config/analytics abstractions | Pending |
 
-**Phase 6 entry notes:** clipboard history plugs into the launcher as one more
-`LauncherActionProvider` returning `.copyToPasteboard` results — the search service and UI need no
-changes. Monitoring means polling `NSPasteboard.general.changeCount` (there is no change
-notification); pick an interval deliberately, as it is a second always-on cost alongside the menu
-bar. Privacy rules from §37 are binding: never log clipboard contents, not even at `.debug`, and
-`LauncherActionRunner.copyToPasteboard` is already written to avoid it.
+**Phase 8 entry notes:** the substance is the **shortcut recorder**, which Settings currently
+promises and does not have. `HotkeyService` already handles registration, replacement and
+same-process conflict detection; what is missing is a SwiftUI recorder view that captures a key
+combination (an `NSView` capturing `keyDown` plus `flagsChanged`, since SwiftUI has no recorder),
+plus persistence per shortcut id.
+
+Do **not** build a heavyweight central manager. With window management dropped there are only a
+few shortcut actions worth having — toggle the launcher, open the dashboard, pause clipboard
+recording — and a registry over three entries is the speculative structure §49 warns against.
+Extend `PreferenceKeys` with one key per shortcut and let `HotkeyService` stay the single owner.
+
+The honesty constraint is already established and must survive into the recorder UI: Carbon
+reports registering a *system-owned* combination as success, and the key press then never arrives.
+The recorder must not imply a shortcut works merely because it was accepted.
 
 ---
 
