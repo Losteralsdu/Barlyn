@@ -116,6 +116,21 @@ xcodebuild -scheme Barlyn -configuration Debug -destination 'platform=macOS,arch
 
 There are no package dependencies to resolve — the project uses only Apple frameworks.
 
+### Signing
+
+`DEVELOPMENT_TEAM` is intentionally left blank in the project file, so the repository is not tied
+to one Apple Developer account. Debug builds sign ad-hoc and run locally with no setup.
+
+To sign with your own team, set it in Xcode (target → Signing & Capabilities → Team), or pass it
+on the command line without modifying the project:
+
+```bash
+xcodebuild -scheme Barlyn -configuration Release DEVELOPMENT_TEAM=YOURTEAMID build
+```
+
+Note that Barlyn must remain **unsandboxed** — SMC sensor access and application enumeration
+both require it.
+
 ---
 
 ## Architecture
