@@ -19,12 +19,14 @@ nonisolated enum LauncherAction: Sendable, Hashable {
 nonisolated enum LauncherResultKind: String, Sendable, Hashable, CaseIterable {
     case metric
     case command
+    case clipboard
     case application
 
     var displayName: String {
         switch self {
         case .metric: "System"
         case .command: "Commands"
+        case .clipboard: "Clipboard"
         case .application: "Applications"
         }
     }
@@ -35,7 +37,8 @@ nonisolated enum LauncherResultKind: String, Sendable, Hashable, CaseIterable {
         switch self {
         case .metric: 0
         case .command: 1
-        case .application: 2
+        case .clipboard: 2
+        case .application: 3
         }
     }
 }

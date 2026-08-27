@@ -24,6 +24,7 @@ final class AppEnvironment {
     let launcherSearch: LauncherSearchService
     let quickLauncher: QuickLauncherController
     let hotkeyService: HotkeyService
+    let clipboard: ClipboardService
 
     private(set) var isBootstrapped = false
 
@@ -33,7 +34,8 @@ final class AppEnvironment {
     init(
         preferences: PreferenceStore,
         metricRegistry: MetricRegistry = MetricRegistry(),
-        metricFormatter: MetricFormatter = MetricFormatter()
+        metricFormatter: MetricFormatter = MetricFormatter(),
+        clipboardStorage: (any ClipboardHistoryStorage)? = nil
     ) {
         self.preferences = preferences
         self.metricRegistry = metricRegistry
@@ -50,6 +52,13 @@ final class AppEnvironment {
         self.dashboardConfiguration = DashboardConfiguration(
             preferences: preferences,
             registry: metricRegistry
+        )
+
+        // Falls back to in-memory when Application Support is unavailable, so a storage failure
+        // degrades to a session-only history rather than crashing the app.
+        self.clipboard = ClipboardService(
+            storage: clipboardStorage ?? FileClipboardHistoryStorage() ?? InMemoryClipboardHistoryStorage(),
+            preferences: preferences
         )
 
         let search = LauncherSearchService()
@@ -73,10 +82,14 @@ final class AppEnvironment {
     }
 
     /// Environment with no persistence side effects, for tests and SwiftUI previews.
+    ///
+    /// Clipboard storage is in-memory too: a test must never read or write the user's real
+    /// clipboard history file.
     static func ephemeral() -> AppEnvironment {
         AppEnvironment(
             preferences: PreferenceStore(storage: InMemoryPreferenceStorage()),
-            metricFormatter: MetricFormatter(locale: Locale(identifier: "en_US_POSIX"))
+            metricFormatter: MetricFormatter(locale: Locale(identifier: "en_US_POSIX")),
+            clipboardStorage: InMemoryClipboardHistoryStorage()
         )
     }
 
@@ -119,6 +132,7 @@ final class AppEnvironment {
 
         registerLauncherProviders()
         applyLauncherHotkey()
+        clipboard.applyMonitoringPreference()
 
         deferredRegistration = Task { [metricRegistry, menuBarConfiguration] in
             // SMC key discovery enumerates every key the controller exposes (~3500 on the
@@ -150,6 +164,7 @@ final class AppEnvironment {
             )
         )
         launcherSearch.register(CommandActionProvider())
+        launcherSearch.register(ClipboardActionProvider(clipboard: clipboard))
         launcherSearch.register(ApplicationActionProvider())
     }
 

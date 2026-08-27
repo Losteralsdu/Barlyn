@@ -59,7 +59,8 @@ struct MenuBarContentView: View {
             // environment free of SwiftUI action plumbing.
             environment.quickLauncher.actionRunner = LauncherActionRunner(
                 openWindow: { openWindow(id: $0.rawValue) },
-                openSettings: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+                openSettings: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) },
+                copyToPasteboard: { environment.clipboard.copy(.text($0)) }
             )
 
             // Demand for the full set lasts only while the panel is open; the menu bar label's

@@ -15,6 +15,8 @@ struct SettingsView: View {
                 .tabItem { Label("Dashboard", systemImage: "square.grid.2x2") }
             LauncherSettingsView()
                 .tabItem { Label("Quick Launcher", systemImage: "magnifyingglass") }
+            ClipboardSettingsView()
+                .tabItem { Label("Clipboard", systemImage: "doc.on.clipboard") }
         }
         .frame(width: 460)
     }
@@ -294,6 +296,89 @@ struct LauncherSettingsView: View {
             set: {
                 environment.preferences[PreferenceKeys.launcherEnabled] = $0
                 environment.applyLauncherHotkey()
+            }
+        )
+    }
+}
+
+/// Clipboard history settings, including the privacy controls §21 requires.
+struct ClipboardSettingsView: View {
+    @Environment(\.appEnvironment) private var environment
+    @State private var isConfirmingClear = false
+
+    var body: some View {
+        Form {
+            Section("Recording") {
+                Toggle("Record clipboard history", isOn: enabledBinding)
+                LabeledContent("Status") {
+                    Label(
+                        environment.clipboard.isMonitoring ? "Recording" : "Paused",
+                        systemImage: environment.clipboard.isMonitoring ? "record.circle" : "pause.circle"
+                    )
+                    .foregroundStyle(environment.clipboard.isMonitoring ? .green : .secondary)
+                }
+
+                Stepper(
+                    "Keep \(environment.clipboard.historyLimit) entries",
+                    value: limitBinding,
+                    in: 10...500,
+                    step: 10
+                )
+            }
+
+            Section("History") {
+                LabeledContent("Stored entries", value: "\(environment.clipboard.items.count)")
+                Button("Clear History…", role: .destructive) { isConfirmingClear = true }
+                    .disabled(environment.clipboard.items.isEmpty)
+            }
+
+            Section("Privacy") {
+                // These are statements of fact about the implementation, not reassurance:
+                // each corresponds to something enforced in ClipboardService.
+                privacyRow("Everything stays on this Mac — no sync, no network", "lock.laptopcomputer")
+                privacyRow("Clipboard contents are never written to the log", "eye.slash")
+                privacyRow("Entries marked private by their app are skipped entirely", "hand.raised")
+                privacyRow("History is stored owner-only, but is not yet encrypted at rest", "exclamationmark.triangle")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(minHeight: 420)
+        .confirmationDialog(
+            "Clear clipboard history?",
+            isPresented: $isConfirmingClear,
+            titleVisibility: .visible
+        ) {
+            Button("Clear \(environment.clipboard.items.count) Entries", role: .destructive) {
+                environment.clipboard.clearHistory()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes every stored entry from this Mac. It cannot be undone.")
+        }
+    }
+
+    private func privacyRow(_ text: String, _ symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private var enabledBinding: Binding<Bool> {
+        Binding(
+            get: { environment.preferences[PreferenceKeys.clipboardEnabled] },
+            set: {
+                environment.preferences[PreferenceKeys.clipboardEnabled] = $0
+                environment.clipboard.applyMonitoringPreference()
+            }
+        )
+    }
+
+    private var limitBinding: Binding<Int> {
+        Binding(
+            get: { environment.clipboard.historyLimit },
+            set: {
+                environment.preferences[PreferenceKeys.clipboardHistoryLimit] = $0
+                environment.clipboard.applyHistoryLimit()
             }
         )
     }

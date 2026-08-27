@@ -52,6 +52,16 @@ nonisolated enum PreferenceKeys {
     /// Carbon reports registering it as a success while the keystroke never actually arrives.
     static let launcherHotkey = PreferenceKey("launcher.hotkey", default: KeyCombination.optionSpace)
     static let launcherEnabled = PreferenceKey("launcher.enabled", default: true)
+
+    // MARK: Clipboard
+    /// Whether history is being recorded. This is the user-facing pause switch, and when off the
+    /// polling task is torn down rather than merely ignored.
+    static let clipboardEnabled = PreferenceKey("clipboard.enabled", default: true)
+    static let clipboardHistoryLimit = PreferenceKey("clipboard.historyLimit", default: 100)
+    /// Seconds. macOS has no pasteboard-change notification, so this is a poll. A `changeCount`
+    /// read measured 0.73 µs on the development Mac, so this is a responsiveness knob, not an
+    /// energy one.
+    static let clipboardPollInterval = PreferenceKey("clipboard.pollIntervalSeconds", default: 0.5)
 }
 
 /// How much each metric shows in the menu bar itself, where horizontal space is scarce.
